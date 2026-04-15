@@ -1,5 +1,6 @@
 # Portfolio-Meta-Learning-Engine
-🧠 Portfolio Meta-Learning Engine
+
+📄 Quant Research Note
 
 Sistema cuantitativo diseñado para adaptar dinámicamente la asignación de portafolio mediante selección inteligente de estrategias basada en regímenes de mercado.
 
@@ -11,6 +12,12 @@ Sistema cuantitativo diseñado para adaptar dinámicamente la asignación de por
 - Meta-learning para selección de estrategias
 - Optimización de portafolio (MVO, Risk Parity, etc.)
 - Evaluación dinámica basada en Sharpe Ratio
+
+📚 Documentación Completa
+
+Para una explicación detallada del modelo, arquitectura, intuición cuantitativa y análisis del sistema, revisa la documentación completa en Notion:
+
+🔗 Ver documentación https://www.notion.so/Portfolio-Meta-Learning-Engine-3437f18e4ca28005975cd72a5922cd98?source=copy_link
 
 ---
 
@@ -44,9 +51,5 @@ Market Regime → Strategy Selection → Portfolio Allocation → Performance
 - Asset allocation dinámico
 - Estrategias multi-factor
 - Sistemas de trading adaptativo
-📚 Documentación Completa
 
-Para una explicación detallada del modelo, arquitectura, intuición cuantitativa y análisis del sistema, revisa la documentación completa en Notion:
-
-🔗 Ver documentación en Notion https://www.notion.so/Portfolio-Meta-Learning-Engine-3437f18e4ca28005975cd72a5922cd98?source=copy_link
 
