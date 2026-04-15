@@ -1,7 +1,7 @@
 # Portfolio-Meta-Learning-Engine
 
 📄 Quant Research Note
-
+Proyecto desarrollado como investigación independiente en finanzas cuantitativas y sistemas adaptativos de inversión. SANTIAGO PEÑA DIAZ
 Sistema cuantitativo diseñado para adaptar dinámicamente la asignación de portafolio mediante selección inteligente de estrategias basada en regímenes de mercado.
 
 ---
