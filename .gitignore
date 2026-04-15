@@ -1,207 +1,404 @@
-# Byte-compiled / optimized / DLL files
-__pycache__/
-*.py[codz]
-*$py.class
+import streamlit as st
+import pandas as pd
+import numpy as np
+import plotly.graph_objects as go
+import yfinance as yf
+from scipy.optimize import minimize
+from sklearn.mixture import GaussianMixture
+from sklearn.preprocessing import StandardScaler
+from sklearn.decomposition import PCA
+from scipy.stats import norm
+import datetime
+#                                   streamlit run
+# =====================
+# CONFIG
+# =====================
+st.set_page_config(
+    page_title="Portfolio Meta-Learning Engine",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-# C extensions
-*.so
+st.markdown("""
+    <style>
+    body, .stApp { background-color: #181A20; color: #E0E0E0; }
+    .stSidebar { background-color: #181A20 !important; }
+    .neon { color: #00FFC6; text-shadow: 0 0 8px #00FFC6; }
+    </style>
+""", unsafe_allow_html=True)
 
-# Distribution / packaging
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-share/python-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-MANIFEST
+# =====================
+# DEFAULTS
+# =====================
+DEFAULT_TICKERS = ["^NDX", "MSFT", "ADBE", "^SOX", "MELI", "EC"]
+DEFAULT_LABELS  = {
+    "^NDX": "Nasdaq 100", "MSFT": "Microsoft", "ADBE": "Adobe",
+    "^SOX": "SOX Semis",  "MELI": "MercadoLibre", "EC": "Ecopetrol"
+}
+PERIOD_OPTIONS = {
+    "1 año  (2024 - hoy)": (datetime.date(2024, 1, 1), datetime.date.today()),
+    "2 años (2023 - hoy)": (datetime.date(2023, 1, 1), datetime.date.today()),
+    "5 años (2020 - hoy)": (datetime.date(2020, 1, 1), datetime.date.today()),
+    "Máximo disponible":   (datetime.date(2010, 1, 1), datetime.date.today()),
+}
 
-# PyInstaller
-#  Usually these files are written by a python script from a template
-#  before PyInstaller builds the exe, so as to inject date/other infos into it.
-*.manifest
-*.spec
+# =====================
+# SIDEBAR
+# =====================
+with st.sidebar:
+    st.markdown("<h2 class='neon'>⚡ Meta-Learning Engine</h2>", unsafe_allow_html=True)
 
-# Installer logs
-pip-log.txt
-pip-delete-this-directory.txt
+    st.markdown("### 📊 Universo de Activos")
+    use_default = st.toggle("Usar activos predefinidos", value=True)
 
-# Unit test / coverage reports
-htmlcov/
-.tox/
-.nox/
-.coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-*.py.cover
-.hypothesis/
-.pytest_cache/
-cover/
+    if use_default:
+        tickers = st.multiselect(
+            "Selecciona activos",
+            options=DEFAULT_TICKERS,
+            default=DEFAULT_TICKERS,
+            format_func=lambda x: f"{DEFAULT_LABELS.get(x, x)} ({x})"
+        )
+    else:
+        raw = st.text_input(
+            "Tickers personalizados (separados por coma)",
+            value="SPY, QQQ, GLD",
+            help="Ejemplos: AAPL, BTC-USD, ^VIX, AMZN"
+        )
+        tickers = [t.strip().upper() for t in raw.split(",") if t.strip()]
 
-# Translations
-*.mo
-*.pot
+    if len(tickers) < 2:
+        st.error("⚠️ Mínimo 2 activos requeridos.")
+        st.stop()
 
-# Django stuff:
-*.log
-local_settings.py
-db.sqlite3
-db.sqlite3-journal
+    st.markdown("### 📅 Período")
+    period_label = st.selectbox("Rango de datos", list(PERIOD_OPTIONS.keys()), index=0)
+    start_date, end_date = PERIOD_OPTIONS[period_label]
+    if st.toggle("🔴 Actualizar hasta hoy", value=True):
+        end_date = datetime.date.today()
+    st.caption(f"📅 {start_date} → {end_date}")
 
-# Flask stuff:
-instance/
-.webassets-cache
+    st.markdown("---")
+    st.markdown("### 🧠 Estrategias")
+    strategy_set = st.multiselect(
+        "Estrategias activas",
+        ["Mean-Variance", "Risk Parity", "Minimum Variance", "Momentum Tilt", "Defensive Allocation"],
+        default=["Mean-Variance", "Risk Parity", "Momentum Tilt"]
+    )
 
-# Scrapy stuff:
-.scrapy
+    st.markdown("### ⚙️ Parámetros")
+    lookback      = st.slider("Lookback Window (días)", 30, 252, 60, 10)
+    risk_aversion = st.slider("Risk Aversion", 0.1, 5.0, 2.0, 0.1)
+    regime_sens   = st.slider("Regime Sensitivity", 0.1, 2.0, 1.0, 0.1)
+    capital       = st.number_input("Capital inicial (USD)", 100, 1_000_000, 1000, 100)
 
-# Sphinx documentation
-docs/_build/
+# =====================
+# HEADER
+# =====================
+st.markdown("<h1 class='neon'>Portfolio Meta-Learning Engine</h1>", unsafe_allow_html=True)
+st.markdown(f"""
+    <div style='color:#00FFC6;font-size:16px;margin-bottom:16px;'>
+    Selección adaptativa de estrategias por régimen de mercado.<br>
+    <span style='color:#FF00FF;'>Activos:</span> {' · '.join(tickers)} &nbsp;|&nbsp;
+    <span style='color:#FF00FF;'>Período:</span> {start_date} → {end_date}
+    </div>
+""", unsafe_allow_html=True)
+st.markdown("---")
 
-# PyBuilder
-.pybuilder/
-target/
+# =====================
+# DATA
+# =====================
+@st.cache_data(ttl=300)
+def load_data(tickers, start, end):
+    raw = yf.download(list(tickers), start=str(start), end=str(end),
+                      auto_adjust=True, progress=False)
+    df  = raw["Close"] if hasattr(raw.columns, "levels") else raw
+    df  = df.dropna(how="all").dropna(axis=1, thresh=int(len(df) * 0.7))
+    missing = [t for t in tickers if t not in df.columns]
+    if missing:
+        st.warning(f"⚠️ Sin datos suficientes: {', '.join(missing)}")
+    return df
 
-# Jupyter Notebook
-.ipynb_checkpoints
+with st.spinner("⏳ Descargando datos..."):
+    df = load_data(tuple(tickers), start_date, end_date)
 
-# IPython
-profile_default/
-ipython_config.py
+if df.empty:
+    st.error("No se pudieron obtener datos.")
+    st.stop()
 
-# pyenv
-#   For a library or package, you might want to ignore these files since the code is
-#   intended to run in multiple environments; otherwise, check them in:
-# .python-version
+with st.expander("📋 Preview de datos"):
+    st.dataframe(df.tail(10).style.format("{:.2f}"), use_container_width=True)
+    st.caption(f"✅ {len(df)} filas · {len(df.columns)} activos · "
+               f"{df.index[0].date()} → {df.index[-1].date()}")
 
-# pipenv
-#   According to pypa/pipenv#598, it is recommended to include Pipfile.lock in version control.
-#   However, in case of collaboration, if having platform-specific dependencies or dependencies
-#   having no cross-platform support, pipenv may install dependencies that don't work, or not
-#   install all needed dependencies.
-#Pipfile.lock
+st.markdown("---")
 
-# UV
-#   Similar to Pipfile.lock, it is generally recommended to include uv.lock in version control.
-#   This is especially recommended for binary packages to ensure reproducibility, and is more
-#   commonly ignored for libraries.
-#uv.lock
+# =====================
+# FEATURES
+# =====================
+def compute_features(df, lookback):
+    returns = np.log(df / df.shift(1)).dropna()
+    vol     = returns.rolling(lookback).std() * np.sqrt(252)
+    corr    = returns.rolling(lookback).corr().dropna()
+    trend   = returns.rolling(lookback).mean()
+    return returns, vol, corr, trend
 
-# poetry
-#   Similar to Pipfile.lock, it is generally recommended to include poetry.lock in version control.
-#   This is especially recommended for binary packages to ensure reproducibility, and is more
-#   commonly ignored for libraries.
-#   https://python-poetry.org/docs/basic-usage/#commit-your-poetrylock-file-to-version-control
-#poetry.lock
-#poetry.toml
+# =====================
+# REGIMES
+# =====================
+def detect_regimes(vol, corr, trend, sensitivity):
+    scaler      = StandardScaler()
+    vol_scaled  = scaler.fit_transform(vol.fillna(0))
+    vol_regime  = GaussianMixture(n_components=2, random_state=42).fit_predict(vol_scaled)
+    corr_mat    = corr.groupby(corr.index).mean().fillna(0)
+    cr          = PCA(n_components=1).fit_transform(corr_mat)
+    corr_regime = (cr > np.median(cr)).astype(int).flatten()
+    trend_str   = (trend.abs().mean(axis=1) > sensitivity * trend.abs().mean().mean()).astype(int)
+    n = len(vol.index)
+    return pd.DataFrame({
+        "Volatility":  np.array(vol_regime)[-n:],
+        "Correlation": np.array(corr_regime)[-n:],
+        "Trend":       np.array(trend_str)[-n:]
+    }, index=vol.index)
 
-# pdm
-#   Similar to Pipfile.lock, it is generally recommended to include pdm.lock in version control.
-#   pdm recommends including project-wide configuration in pdm.toml, but excluding .pdm-python.
-#   https://pdm-project.org/en/latest/usage/project/#working-with-version-control
-#pdm.lock
-#pdm.toml
-.pdm-python
-.pdm-build/
+# =====================
+# STRATEGIES
+# =====================
+def get_weights(strat, returns, ra):
+    n   = returns.shape[1]
+    cov = returns.cov()
+    mu  = returns.mean()
+    eq  = np.ones(n) / n
+    con = {'type': 'eq', 'fun': lambda w: w.sum() - 1}
+    bnd = [(0, 1)] * n
 
-# pixi
-#   Similar to Pipfile.lock, it is generally recommended to include pixi.lock in version control.
-#pixi.lock
-#   Pixi creates a virtual environment in the .pixi directory, just like venv module creates one
-#   in the .venv directory. It is recommended not to include this directory in version control.
-.pixi
+    if strat == "Mean-Variance":
+        r = minimize(lambda w: -np.dot(w, mu) + ra * np.sqrt(np.dot(w, cov @ w)),
+                     eq, method='SLSQP', bounds=bnd, constraints=con)
+        return r.x
+    elif strat == "Risk Parity":
+        def obj(w):
+            pv = np.dot(w, cov @ w)
+            rc = w * (cov @ w) / pv
+            return np.sum((rc - 1/n)**2)
+        return minimize(obj, eq, method='SLSQP', bounds=bnd, constraints=con).x
+    elif strat == "Minimum Variance":
+        return minimize(lambda w: np.dot(w, cov @ w), eq,
+                        method='SLSQP', bounds=bnd, constraints=con).x
+    elif strat == "Momentum Tilt":
+        mom = mu / (returns.std() + 1e-6)
+        return np.clip(mom / mom.sum(), 0, 1)
+    elif strat == "Defensive Allocation":
+        iv = 1 / (returns.std() + 1e-6)
+        return iv / iv.sum()
+    return eq
 
-# PEP 582; used by e.g. github.com/David-OConnor/pyflow and github.com/pdm-project/pdm
-__pypackages__/
+# =====================
+# META-LEARNER
+# =====================
+def meta_learn(returns, strategies, lookback, ra):
+    n = len(returns)
+    timeline, confidence, allocations = [], [], []
+    for i in range(lookback, n):
+        win    = returns.iloc[i-lookback:i]
+        scores = {}
+        for s in strategies:
+            w  = get_weights(s, win, ra)
+            pr = np.dot(w, win.mean())
+            pv = np.sqrt(max(np.dot(w, win.cov() @ w), 1e-10))
+            scores[s] = pr / pv
+        best = max(scores, key=scores.get)
+        vals = list(scores.values())
+        conf = norm.cdf(scores[best], np.mean(vals), np.std(vals) + 1e-6)
+        timeline.append(best)
+        confidence.append(conf)
+        allocations.append(get_weights(best, win, ra))
+    idx = returns.index[lookback:]
+    return (pd.Series(timeline, index=idx),
+            pd.Series(confidence, index=idx),
+            pd.DataFrame(allocations, index=idx, columns=returns.columns))
 
-# Celery stuff
-celerybeat-schedule
-celerybeat.pid
+# =====================
+# PERFORMANCE
+# =====================
+def compute_performance(returns, allocations, capital):
+    port_ret  = (returns * allocations).sum(axis=1)
+    equity    = capital * (1 + port_ret).cumprod()
+    drawdown  = equity / equity.cummax() - 1
+    roll_sh   = port_ret.rolling(30).mean() / (port_ret.rolling(30).std() + 1e-6) * np.sqrt(252)
+    pnl       = equity.iloc[-1] - capital
+    y         = datetime.date.today().year
+    yd        = equity[equity.index.year == y]
+    ytd       = (yd.iloc[-1]/yd.iloc[0] - 1)*100 if len(yd) >= 2 else None
+    return equity, drawdown, roll_sh, {
+        "total_ret": (equity.iloc[-1]/capital - 1)*100,
+        "max_dd":    drawdown.min()*100,
+        "avg_sh":    roll_sh.mean(),
+        "final":     equity.iloc[-1],
+        "pnl":       pnl,
+        "ytd":       ytd,
+    }
 
-# SageMath parsed files
-*.sage.py
+# =====================
+# RUN
+# =====================
+COLORS = ['#00FFC6','#FF00FF','#FFD700','#FF6600','#00AAFF','#FF4444']
+STRAT_COLORS = {
+    "Mean-Variance": "#00FFC6", "Risk Parity": "#FF00FF",
+    "Minimum Variance": "#FFD700", "Momentum Tilt": "#FF6600",
+    "Defensive Allocation": "#00AAFF"
+}
 
-# Environments
-.env
-.envrc
-.venv
-env/
-venv/
-ENV/
-env.bak/
-venv.bak/
+try:
+    with st.spinner("🧠 Ejecutando meta-learning..."):
+        returns, vol, corr, trend = compute_features(df, lookback)
+        regime_df = detect_regimes(vol, corr, trend, regime_sens)
+        strat_tl, conf_scores, allocations = meta_learn(returns, strategy_set, lookback, risk_aversion)
+        returns_cut = returns.loc[allocations.index]
+        equity, drawdown, roll_sh, m = compute_performance(returns_cut, allocations, capital)
 
-# Spyder project settings
-.spyderproject
-.spyproject
+    # ── KPIs ──
+    st.markdown("<h2 class='neon'>📈 Performance Summary</h2>", unsafe_allow_html=True)
+    k1, k2, k3, k4, k5 = st.columns(5)
+    k1.metric("Total Return",  f"{m['total_ret']:.2f}%")
+    k2.metric("Max Drawdown",  f"{m['max_dd']:.2f}%")
+    k3.metric("Avg Sharpe",    f"{m['avg_sh']:.2f}")
+    k4.metric("Valor Final",   f"${m['final']:,.2f}")
+    k5.metric("P&L",           f"{'+'if m['pnl']>=0 else ''}${m['pnl']:,.2f}")
+    if m["ytd"] is not None:
+        st.caption(f"📅 Retorno {datetime.date.today().year}: **{m['ytd']:+.2f}%**")
 
-# Rope project settings
-.ropeproject
+    st.markdown("---")
 
-# mkdocs documentation
-/site
+    # ── Equity + Drawdown ──
+    st.markdown("<h2 class='neon'>Equity Curve</h2>", unsafe_allow_html=True)
+    fig_eq = go.Figure()
+    fig_eq.add_trace(go.Scatter(x=equity.index, y=equity, mode='lines',
+        line=dict(color='#00FFC6', width=2), name='Portfolio'))
+    fig_eq.add_hline(y=capital, line_dash='dot', line_color='#FF00FF',
+        annotation_text="Capital inicial", annotation_font_color="#FF00FF")
+    fig_eq.update_layout(template='plotly_dark', plot_bgcolor='#181A20',
+        paper_bgcolor='#181A20', font=dict(color='#00FFC6'),
+        height=350, xaxis_title='Fecha', yaxis_title='Valor (USD)')
+    st.plotly_chart(fig_eq, use_container_width=True)
 
-# mypy
-.mypy_cache/
-.dmypy.json
-dmypy.json
+    fig_dd = go.Figure()
+    fig_dd.add_trace(go.Scatter(x=drawdown.index, y=drawdown*100,
+        fill='tozeroy', mode='lines', line=dict(color='#FF4444', width=1.5), name='Drawdown'))
+    fig_dd.update_layout(title='Drawdown (%)', template='plotly_dark',
+        plot_bgcolor='#181A20', paper_bgcolor='#181A20',
+        font=dict(color='#00FFC6'), height=220)
+    st.plotly_chart(fig_dd, use_container_width=True)
 
-# Pyre type checker
-.pyre/
+    st.markdown("---")
 
-# pytype static type analyzer
-.pytype/
+    # ── Estrategias ──
+    st.markdown("<h2 class='neon'>Estrategias por Régimen</h2>", unsafe_allow_html=True)
+    col_a, col_b = st.columns([2, 1])
+    with col_a:
+        fig_s = go.Figure()
+        for s in strategy_set:
+            mask = strat_tl == s
+            fig_s.add_trace(go.Scatter(
+                x=strat_tl[mask].index, y=conf_scores[mask],
+                mode='markers', name=s,
+                marker=dict(color=STRAT_COLORS.get(s,'#FFF'), size=5, opacity=0.8)
+            ))
+        fig_s.update_layout(template='plotly_dark', plot_bgcolor='#181A20',
+            paper_bgcolor='#181A20', font=dict(color='#00FFC6'), height=300,
+            xaxis_title='Fecha', yaxis_title='Confianza',
+            legend=dict(orientation='h', y=-0.3))
+        st.plotly_chart(fig_s, use_container_width=True)
+    with col_b:
+        sc = strat_tl.value_counts()
+        fig_pie = go.Figure(go.Pie(
+            labels=sc.index, values=sc.values, hole=0.4,
+            marker=dict(colors=[STRAT_COLORS.get(s,'#FFF') for s in sc.index])
+        ))
+        fig_pie.update_layout(template='plotly_dark', paper_bgcolor='#181A20',
+            font=dict(color='#00FFC6'), height=300,
+            legend=dict(orientation='h', y=-0.2))
+        st.plotly_chart(fig_pie, use_container_width=True)
 
-# Cython debug symbols
-cython_debug/
+    st.markdown("---")
 
-# PyCharm
-#  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
-#  be found at https://github.com/github/gitignore/blob/main/Global/JetBrains.gitignore
-#  and can be added to the global gitignore or merged into this file.  For a more nuclear
-#  option (not recommended) you can uncomment the following to ignore the entire idea folder.
-#.idea/
+    # ── Allocación actual ──
+    st.markdown("<h2 class='neon'>Asignación Actual</h2>", unsafe_allow_html=True)
+    last = allocations.iloc[-1]
+    fig_bar = go.Figure(go.Bar(
+        x=last.index, y=last.values*100,
+        marker_color=COLORS[:len(last)],
+        text=[f"{v*100:.1f}%" for v in last.values], textposition='auto'
+    ))
+    fig_bar.update_layout(template='plotly_dark', plot_bgcolor='#181A20',
+        paper_bgcolor='#181A20', font=dict(color='#00FFC6'), height=300,
+        yaxis_title='Peso (%)', title=f"Estrategia activa: {strat_tl.iloc[-1]}")
+    st.plotly_chart(fig_bar, use_container_width=True)
 
-# Abstra
-# Abstra is an AI-powered process automation framework.
-# Ignore directories containing user credentials, local state, and settings.
-# Learn more at https://abstra.io/docs
-.abstra/
+    st.markdown("---")
 
-# Visual Studio Code
-#  Visual Studio Code specific template is maintained in a separate VisualStudioCode.gitignore 
-#  that can be found at https://github.com/github/gitignore/blob/main/Global/VisualStudioCode.gitignore
-#  and can be added to the global gitignore or merged into this file. However, if you prefer, 
-#  you could uncomment the following to ignore the entire vscode folder
-# .vscode/
+    # ── Rolling Sharpe ──
+    st.markdown("<h2 class='neon'>Rolling Sharpe Ratio (30d)</h2>", unsafe_allow_html=True)
+    fig_sh = go.Figure()
+    fig_sh.add_trace(go.Scatter(x=roll_sh.index, y=roll_sh, mode='lines',
+        line=dict(color='#FFD700', width=1.5), name='Sharpe'))
+    fig_sh.add_hline(y=1, line_dash='dot', line_color='#00FFC6',
+        annotation_text="Sharpe = 1", annotation_font_color="#00FFC6")
+    fig_sh.add_hline(y=0, line_dash='dot', line_color='#FF4444')
+    fig_sh.update_layout(template='plotly_dark', plot_bgcolor='#181A20',
+        paper_bgcolor='#181A20', font=dict(color='#00FFC6'), height=280)
+    st.plotly_chart(fig_sh, use_container_width=True)
 
-# Ruff stuff:
-.ruff_cache/
+    st.markdown("---")
 
-# PyPI configuration file
-.pypirc
+    # ── Regímenes ──
+    st.markdown("<h2 class='neon'>Regímenes de Mercado</h2>", unsafe_allow_html=True)
+    fig_reg = go.Figure()
+    for col, color in zip(regime_df.columns, ['#FF4444','#FF00FF','#00FFC6']):
+        fig_reg.add_trace(go.Scatter(x=regime_df.index, y=regime_df[col],
+            mode='lines', name=col, line=dict(color=color, width=1.5)))
+    fig_reg.update_layout(template='plotly_dark', plot_bgcolor='#181A20',
+        paper_bgcolor='#181A20', font=dict(color='#00FFC6'), height=260,
+        yaxis=dict(tickvals=[0,1], ticktext=["Bajo","Alto"]),
+        legend=dict(orientation='h', y=-0.25))
+    st.plotly_chart(fig_reg, use_container_width=True)
 
-# Cursor
-#  Cursor is an AI-powered code editor. `.cursorignore` specifies files/directories to
-#  exclude from AI features like autocomplete and code analysis. Recommended for sensitive data
-#  refer to https://docs.cursor.com/context/ignore-files
-.cursorignore
-.cursorindexingignore
+    st.markdown("---")
 
-# Marimo
-marimo/_static/
-marimo/_lsp/
-__marimo__/
+    # ── 3D Allocations ──
+    st.markdown("<h2 class='neon'>Evolución 3D de Asignaciones</h2>", unsafe_allow_html=True)
+    a3d  = allocations.tail(60)
+    d3d  = a3d.index.strftime('%Y-%m-%d').tolist()
+    step = max(1, len(d3d)//6)
+    fig3d = go.Figure()
+    for i, asset in enumerate(a3d.columns):
+        fig3d.add_trace(go.Scatter3d(
+            x=list(range(len(d3d))), y=[i]*len(d3d), z=a3d[asset],
+            mode='lines+markers',
+            line=dict(color=COLORS[i % len(COLORS)], width=5),
+            marker=dict(size=3, color=COLORS[i % len(COLORS)]),
+            name=asset, text=d3d
+        ))
+    fig3d.update_layout(
+        scene=dict(
+            xaxis=dict(title='Tiempo', tickvals=list(range(0,len(d3d),step)),
+                       ticktext=d3d[::step], backgroundcolor='#181A20', color='#00FFC6'),
+            yaxis=dict(title='Activo', tickvals=list(range(len(a3d.columns))),
+                       ticktext=a3d.columns.tolist(), backgroundcolor='#181A20', color='#FF00FF'),
+            zaxis=dict(title='Peso', backgroundcolor='#181A20', color='#FFAA00'),
+        ),
+        template='plotly_dark', paper_bgcolor='#181A20',
+        font=dict(color='#00FFC6'), height=550,
+        margin=dict(l=0, r=0, b=0, t=30)
+    )
+    st.plotly_chart(fig3d, use_container_width=True)
+
+    st.markdown("---")
+    st.markdown(
+        "<div style='text-align:center;color:#00FFC6;font-size:14px;'>"
+        "Portfolio Meta-Learning Engine · Investigación cuantitativa independiente"
+        "</div>", unsafe_allow_html=True
+    )
+
+except Exception as e:
+    st.error(f"❌ Error: {e}")
+    st.exception(e)
